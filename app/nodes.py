@@ -1,10 +1,13 @@
 import json
+import hashlib
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, TypedDict, Union
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agent.llm import get_chat_model
+from app.db import initialize_database, upsert_node
 from app.template import PatcherNodeResponse, PlannerCoderResponse, RepoNavigatorResponse, SearchResultItem
 from app.tools.code_index import build_symbol_map, load_symbol_map
 from app.tools.helper_tools import parse_ripgrep_output
@@ -35,6 +38,77 @@ TOOL_MAP = {
     "find_files": find_files,
     "read_file_snippet": read_file_snippet,
 }
+
+
+def _current_git_head_commit(project_root: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        commit = result.stdout.strip()
+        return commit or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _create_git_commit(project_root: str, commit_message: str) -> str:
+    try:
+        add_result = subprocess.run(
+            ["git", "add", "-u"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if add_result.returncode != 0:
+            return "unknown"
+
+        commit_result = subprocess.run(
+            ["git", "commit", "-m", commit_message],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if commit_result.returncode != 0:
+            return _current_git_head_commit(project_root)
+
+        return _current_git_head_commit(project_root)
+    except Exception:
+        return "unknown"
+
+
+def _node_hash(node_name: str, state: MonorepoState, payload: Any) -> str:
+    digest_source = json.dumps(
+        {
+            "node": node_name,
+            "issue_title": state.get("issue_title", ""),
+            "issue_description": state.get("issue_description", ""),
+            "project_root": state.get("project_root", ""),
+            "payload": payload,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+
+
+def _persist_node(node_name: str, state: MonorepoState, payload: Any) -> None:
+    project_root = state.get("project_root") or "."
+    initialize_database()
+    commit_message = f"Record {node_name} node state"
+    git_commit_sha = _create_git_commit(project_root, commit_message)
+    upsert_node(
+        node_id=node_name,
+        parent_id=state.get("parent_id"),
+        node_hash=_node_hash(node_name, state, payload),
+        git_commit_sha=git_commit_sha,
+        raw_response=json.dumps(payload, default=str),
+    )
 
 
 def normalize_tool_output(output: Any) -> str:
@@ -200,6 +274,17 @@ def repo_navigator_node(state: MonorepoState) -> MonorepoState:
     state["symbol_map"] = symbol_map or json.dumps(symbol_index)
     state["search_results"] = parsed_data.get("search_results") or captured_search_results
     state["relevant_files"] = parsed_data.get("relevant_files", [])
+    _persist_node(
+        "repo_navigator",
+        state,
+        {
+            "target_packages": state["target_packages"],
+            "filesystem_map": state["filesystem_map"],
+            "symbol_map": state["symbol_map"],
+            "search_results": state["search_results"],
+            "relevant_files": state["relevant_files"],
+        },
+    )
     return state
 
 
@@ -262,6 +347,15 @@ def planner_node(state: MonorepoState) -> MonorepoState:
     state["proposed_plan"] = parsed_response.get("proposed_plan", "")
     state["test_command"] = parsed_response.get("test_command", "")
     state["diffs_to_apply"] = parsed_response.get("diffs_to_apply", [])
+    _persist_node(
+        "planner",
+        state,
+        {
+            "proposed_plan": state["proposed_plan"],
+            "test_command": state["test_command"],
+            "diffs_to_apply": state["diffs_to_apply"],
+        },
+    )
     return state
 
 
@@ -305,4 +399,12 @@ def patcher_node(state: MonorepoState) -> MonorepoState:
 
     state["proposed_plan"] = parsed_response.proposed_plan
     state["diffs_to_apply"] = [diff.model_dump() for diff in parsed_response.diffs_to_apply]
+    _persist_node(
+        "patcher",
+        state,
+        {
+            "proposed_plan": state["proposed_plan"],
+            "diffs_to_apply": state["diffs_to_apply"],
+        },
+    )
     return state
