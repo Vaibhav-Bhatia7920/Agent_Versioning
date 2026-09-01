@@ -1,24 +1,27 @@
 import json
-import hashlib
-import subprocess
-from pathlib import Path
+
 from typing import Any, Dict, List, Optional, TypedDict, Union
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agent.llm import get_chat_model
-from app.db import fetch_node, initialize_database, upsert_node
-from app.template import PatcherNodeResponse, PlannerCoderResponse, RepoNavigatorResponse, SearchResultItem
+
+from app.template import Node, PatcherNodeResponse, PlannerCoderResponse, RepoNavigatorResponse, SearchResultItem
 from app.tools.code_index import build_symbol_map, load_symbol_map
 from app.tools.helper_tools import parse_ripgrep_output
 from app.agent.llm_tools import NAVIGATOR_TOOLS, find_files, read_file_snippet, run_ripgrep, run_tree
+from app.tools.node_helpers import convert_langchain_messages_to_completion_input,fetch_file_contents, normalize_tool_output
+# from app.nodes import _persist_node
 
 
 class MonorepoState(TypedDict):
+    current_node_id: str
+    parent_node_id: str = Optional[str]
     issue_title: str
     issue_description: str
     config: Dict[str, Any]
     project_root: str
+    current_node_id: str
     target_packages: List[str]
     filesystem_map: str
     symbol_map: str
@@ -32,6 +35,7 @@ class MonorepoState(TypedDict):
     is_resolved: bool
 
 
+
 TOOL_MAP = {
     "run_tree": run_tree,
     "run_ripgrep": run_ripgrep,
@@ -40,166 +44,9 @@ TOOL_MAP = {
 }
 
 
-def _current_git_head_commit(project_root: str) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        commit = result.stdout.strip()
-        return commit or "unknown"
-    except Exception:
-        return "unknown"
 
 
-def _create_git_commit(project_root: str, commit_message: str) -> str:
-    try:
-        add_result = subprocess.run(
-            ["git", "add", "-u"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if add_result.returncode != 0:
-            return "unknown"
 
-        commit_result = subprocess.run(
-            ["git", "commit", "-m", commit_message],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if commit_result.returncode != 0:
-            return _current_git_head_commit(project_root)
-
-        return _current_git_head_commit(project_root)
-    except Exception:
-        return "unknown"
-
-
-def _node_hash(node_name: str, state: MonorepoState, payload: Any) -> str:
-    digest_source = json.dumps(
-        {
-            "node": node_name,
-            "issue_title": state.get("issue_title", ""),
-            "issue_description": state.get("issue_description", ""),
-            "project_root": state.get("project_root", ""),
-            "payload": payload,
-        },
-        sort_keys=True,
-        default=str,
-    )
-    return hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
-
-
-def _persist_node(node_name: str, state: MonorepoState, payload: Any) -> None:
-    project_root = state.get("project_root") or "."
-    initialize_database()
-    commit_message = f"Record {node_name} node state"
-    git_commit_sha = _create_git_commit(project_root, commit_message)
-    upsert_node(
-        node_id=node_name,
-        parent_id=state.get("parent_id"),
-        node_hash=_node_hash(node_name, state, payload),
-        git_commit_sha=git_commit_sha,
-        raw_response=json.dumps(payload, default=str),
-    )
-
-
-def get_node_context(node_id: str, db_path: Optional[object] = None) -> str:
-    """Walk parent links from a node back to the root and return the raw context chain."""
-    context_parts: List[str] = []
-    current_node_id = node_id
-    visited_nodes = set()
-
-    while current_node_id and current_node_id not in visited_nodes:
-        visited_nodes.add(current_node_id)
-        row = fetch_node(current_node_id, db_path=db_path)
-        if row is None:
-            break
-
-        raw_response = row["raw_response"] if "raw_response" in row.keys() else row[4]
-        if raw_response:
-            context_parts.append(str(raw_response))
-
-        parent_id = row["parent_id"] if "parent_id" in row.keys() else row[1]
-        current_node_id = str(parent_id) if parent_id else ""
-
-    context_parts.reverse()
-    return "\n\n".join(context_parts)
-
-
-def normalize_tool_output(output: Any) -> str:
-    if isinstance(output, tuple):
-        stdout = output[0]
-        stderr = output[1] if len(output) > 1 else ""
-        if stdout:
-            return str(stdout)
-        if stderr:
-            return f"Error: {stderr}"
-        return ""
-    if isinstance(output, dict):
-        if output.get("exit_code", 0) != 0 and output.get("stderr"):
-            return f"Error: {output['stderr']}"
-        return str(output.get("stdout") or output.get("content") or output)
-    return str(output)
-
-
-def _tool_output_text(output: Any) -> str:
-    if isinstance(output, tuple):
-        stdout = output[0] if len(output) > 0 else ""
-        stderr = output[1] if len(output) > 1 else ""
-        return str(stdout or stderr or "")
-    if isinstance(output, dict):
-        return str(output.get("stdout") or output.get("content") or output.get("stderr") or output)
-    return str(output)
-
-
-def read_local_file(file_path: str) -> str:
-    try:
-        return Path(file_path).read_text(encoding="utf-8")
-    except Exception as exc:
-        return f"// Error reading file: {exc}"
-
-
-def convert_langchain_messages_to_completion_input(messages: List[Any]) -> List[Dict[str, Any]]:
-    formatted_input = []
-    for msg in messages:
-        if isinstance(msg, SystemMessage):
-            formatted_input.append({"role": "system", "content": msg.content})
-        elif isinstance(msg, HumanMessage):
-            formatted_input.append({"role": "user", "content": msg.content})
-        elif isinstance(msg, AIMessage):
-            item: Dict[str, Any] = {"role": "assistant", "content": msg.content or ""}
-            if getattr(msg, "tool_calls", None):
-                standard_tool_calls = []
-                for tc in msg.tool_calls:
-                    if isinstance(tc, dict) and "function" in tc:
-                        standard_tool_calls.append(tc)
-                    elif isinstance(tc, dict):
-                        standard_tool_calls.append(
-                            {
-                                "id": tc.get("id", f"call_{tc.get('name')}"),
-                                "type": "function",
-                                "function": {
-                                    "name": tc.get("name"),
-                                    "arguments": json.dumps(tc.get("args", {}))
-                                    if isinstance(tc.get("args"), dict)
-                                    else str(tc.get("args", "{}")),
-                                },
-                            }
-                        )
-                if standard_tool_calls:
-                    item["tool_calls"] = standard_tool_calls
-            formatted_input.append(item)
-        elif isinstance(msg, ToolMessage):
-            formatted_input.append({"role": "tool", "tool_call_id": msg.tool_call_id, "content": str(msg.content)})
-    return formatted_input
 
 
 def repo_navigator_node(state: MonorepoState) -> MonorepoState:
@@ -297,25 +144,20 @@ def repo_navigator_node(state: MonorepoState) -> MonorepoState:
     state["symbol_map"] = symbol_map or json.dumps(symbol_index)
     state["search_results"] = parsed_data.get("search_results") or captured_search_results
     state["relevant_files"] = parsed_data.get("relevant_files", [])
-    _persist_node(
-        "repo_navigator",
-        state,
-        {
-            "target_packages": state["target_packages"],
-            "filesystem_map": state["filesystem_map"],
-            "symbol_map": state["symbol_map"],
-            "search_results": state["search_results"],
-            "relevant_files": state["relevant_files"],
-        },
-    )
+    # _persist_node(
+    #     "repo_navigator",
+    #     state,
+    #     {
+    #         "target_packages": state["target_packages"],
+    #         "filesystem_map": state["filesystem_map"],
+    #         "symbol_map": state["symbol_map"],
+    #         "search_results": state["search_results"],
+    #         "relevant_files": state["relevant_files"],
+    #     },
+    # )
     return state
 
 
-def fetch_file_contents(file_paths: List[str]) -> Dict[str, str]:
-    file_contents: Dict[str, str] = {}
-    for path in file_paths:
-        file_contents[path] = read_local_file(path)
-    return file_contents
 
 
 def planner_node(state: MonorepoState) -> MonorepoState:
@@ -370,15 +212,15 @@ def planner_node(state: MonorepoState) -> MonorepoState:
     state["proposed_plan"] = parsed_response.get("proposed_plan", "")
     state["test_command"] = parsed_response.get("test_command", "")
     state["diffs_to_apply"] = parsed_response.get("diffs_to_apply", [])
-    _persist_node(
-        "planner",
-        state,
-        {
-            "proposed_plan": state["proposed_plan"],
-            "test_command": state["test_command"],
-            "diffs_to_apply": state["diffs_to_apply"],
-        },
-    )
+    # _persist_node(
+    #     "planner",
+    #     state,
+    #     {
+    #         "proposed_plan": state["proposed_plan"],
+    #         "test_command": state["test_command"],
+    #         "diffs_to_apply": state["diffs_to_apply"],
+    #     },
+    # )
     return state
 
 
@@ -422,12 +264,12 @@ def patcher_node(state: MonorepoState) -> MonorepoState:
 
     state["proposed_plan"] = parsed_response.proposed_plan
     state["diffs_to_apply"] = [diff.model_dump() for diff in parsed_response.diffs_to_apply]
-    _persist_node(
-        "patcher",
-        state,
-        {
-            "proposed_plan": state["proposed_plan"],
-            "diffs_to_apply": state["diffs_to_apply"],
-        },
-    )
+    # _persist_node(
+    #     "patcher",
+    #     state,
+    #     {
+    #         "proposed_plan": state["proposed_plan"],
+    #         "diffs_to_apply": state["diffs_to_apply"],
+    #     },
+    # )
     return state

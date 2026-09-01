@@ -1,3 +1,4 @@
 .venv
 .env
 .agent_versioning
+node_store.db
