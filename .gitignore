@@ -2,3 +2,4 @@
 .env
 .agent_versioning
 node_store.db
+my_dictionary.db

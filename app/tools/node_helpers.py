@@ -1,7 +1,11 @@
+import json
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from typing import Any, Dict, List, Optional, TypedDict, Union
 from pathlib import Path
-from app.db import fetch_node, initialize_database, upsert_node
+# from app.db import fetch_node, initialize_database, upsert_node
+from app.state_template import MonorepoState
+import hashlib
+from app.tools.repository_service import RepositoryService
 
 def convert_langchain_messages_to_completion_input(messages: List[Any]) -> List[Dict[str, Any]]:
     formatted_input = []
@@ -57,27 +61,29 @@ def _node_hash(node_name: str, state: MonorepoState, payload: Any) -> str:
         sort_keys=True,
         default=str,
     )
-def get_node_context(node_id: str, db_path: Optional[object] = None) -> str:
-    """Walk parent links from a node back to the root and return the raw context chain."""
-    context_parts: List[str] = []
-    current_node_id = node_id
-    visited_nodes = set()
+    return hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
 
-    while current_node_id and current_node_id not in visited_nodes:
-        visited_nodes.add(current_node_id)
-        row = fetch_node(current_node_id, db_path=db_path)
-        if row is None:
-            break
+# def get_node_context(node_id: str, db_path: Optional[object] = None) -> str:
+#     """Walk parent links from a node back to the root and return the raw context chain."""
+#     context_parts: List[str] = []
+#     current_node_id = node_id
+#     visited_nodes = set()
 
-        raw_response = row["raw_response"] if "raw_response" in row.keys() else row[4]
-        if raw_response:
-            context_parts.append(str(raw_response))
+#     while current_node_id and current_node_id not in visited_nodes:
+#         visited_nodes.add(current_node_id)
+#         row = fetch_node(current_node_id, db_path=db_path)
+#         if row is None:
+#             break
 
-        parent_id = row["parent_id"] if "parent_id" in row.keys() else row[1]
-        current_node_id = str(parent_id) if parent_id else ""
+#         raw_response = row["raw_response"] if "raw_response" in row.keys() else row[4]
+#         if raw_response:
+#             context_parts.append(str(raw_response))
 
-    context_parts.reverse()
-    return "\n\n".join(context_parts)
+#         parent_id = row["parent_id"] if "parent_id" in row.keys() else row[1]
+#         current_node_id = str(parent_id) if parent_id else ""
+
+#     context_parts.reverse()
+#     return "\n\n".join(context_parts)
 
 
 def normalize_tool_output(output: Any) -> str:
@@ -110,3 +116,12 @@ def fetch_file_contents(file_paths: List[str]) -> Dict[str, str]:
     for path in file_paths:
         file_contents[path] = read_local_file(path)
     return file_contents
+
+
+
+def _current_git_head_commit(project_root: str) -> str:
+	return RepositoryService(project_root).current_head()
+
+
+def _create_git_commit(project_root: str, commit_message: str) -> str:
+	return RepositoryService(project_root).create_commit(commit_message)

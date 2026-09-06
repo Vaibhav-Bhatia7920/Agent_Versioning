@@ -1,4 +1,4 @@
-from app.template import Node
+# This is the main entry point for the application.
 node_map  = {}
 
 head_node = Node(

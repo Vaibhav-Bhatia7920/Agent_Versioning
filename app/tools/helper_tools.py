@@ -1,23 +1,35 @@
-import re
-from typing import List
+
+from typing import List, Dict, Optional, Sequence, Union
 
 from app.template import SearchResultItem
 
 
 def parse_ripgrep_output(raw_output: str) -> List[SearchResultItem]:
-    items: List[SearchResultItem] = []
+    return parse_search_results(raw_output)
 
-    for line in raw_output.splitlines():
-        match = re.match(r"^([^:]+):(\d+):(.*)$", line.strip())
-        if match:
-            items.append(
+def parse_search_results(
+    raw_results: Union[str, Sequence[str]],
+) -> List[SearchResultItem]:
+    """Parse ripgrep output into validated search result models."""
+    lines = raw_results.splitlines() if isinstance(raw_results, str) else raw_results
+    results: List[SearchResultItem] = []
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("..."):
+            continue
+
+        file, separator, remainder = line.partition(":")
+        line_number, separator, content = remainder.partition(":")
+        if separator and line_number.isdigit():
+            results.append(
                 SearchResultItem(
-                    file=match.group(1),
-                    line=int(match.group(2)),
-                    content=match.group(3).strip(),
+                    file=file,
+                    line=int(line_number),
+                    content=content.strip(),
                 )
             )
-        elif line.strip() and not line.startswith("..."):
-            items.append(SearchResultItem(file="unknown", line=None, content=line.strip()))
+        else:
+            results.append(SearchResultItem(file="unknown", content=line))
 
-    return items
+    return results

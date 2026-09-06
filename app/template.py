@@ -1,7 +1,7 @@
 
 
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Sequence, Union
 
 class Node(BaseModel):
     NodeId: str = Field(..., description="Unique identifier for the node")
@@ -16,8 +16,6 @@ class SearchResultItem(BaseModel):
     file: str = Field(description="Relative file path where the match was found")
     line: Optional[int] = Field(default=None, description="Line number of the match")
     content: str = Field(description="Matching code snippet or symbol declaration")
-
-
 class RepoNavigatorResponse(BaseModel):
     target_packages: List[str] = Field(
         description="List of affected sub-packages or modules (e.g., ['packages/core', 'apps/api'])"

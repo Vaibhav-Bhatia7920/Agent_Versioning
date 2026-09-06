@@ -1,6 +1,13 @@
-from langgraph.graph import START, StateGraph, END
-from app.node_operations import MonorepoState, _node_hash,ensure_root_phase, initialize_and_upsert_child, initialize_root_phase, initialize_root_snap, patcher_node, planner_node, repo_navigator_node
+from pathlib import Path
+import sys
 
+if __package__ is None or __package__ == "":
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from langgraph.graph import START, StateGraph, END
+from app.node_operations import MonorepoState, patcher_node, planner_node, repo_navigator_node
+from app.dictionary_db import add_node_to_dict, get_node_from_dict
+from app.node_operations import step_back
 def initialize_state_graph() -> StateGraph:
     graph = StateGraph(MonorepoState)
     graph.add_node("repo_navigator", repo_navigator_node)
@@ -14,13 +21,14 @@ def initialize_state_graph() -> StateGraph:
 
     return graph
 
-
-def add_root_phase():
+def add_root_phase(user_query: str, project_root: str = ".", issue_description: str = "") -> str:
     initial_state: MonorepoState = {
-        "issue_title": "NA",
-        "issue_description": "NA",
+        "current_node_id": "1",
+        "parent_node_id": "",
+        "issue_title": user_query,
+        "issue_description": issue_description or user_query,
         "config": {"max_search_turns": 3},
-        "project_root": ".",
+        "project_root": project_root,
         "target_packages": [],
         "filesystem_map": "",
         "symbol_map": "",
@@ -32,15 +40,14 @@ def add_root_phase():
         "test_stdout": "",
         "test_stderr": "",
         "is_resolved": False,
-        "iteration_count": 0,
     }
 
     flow = initialize_state_graph()
     app = flow.compile()
     final_state = app.invoke(initial_state)
-    final_state["current_node_id"] = _node_hash(final_state, {"kind": "root"})
-    root_phase_id = ensure_root_phase(final_state)
-    return root_phase_id
+    Node = add_node_to_dict(final_state["current_node_id"], final_state)
+    return Node.NodeId
+
 
 def add_phase(parent_node_id: str, state: MonorepoState, user_query: str, payload: dict) -> str:
     state["parent_node_id"] = parent_node_id
@@ -49,29 +56,50 @@ def add_phase(parent_node_id: str, state: MonorepoState, user_query: str, payloa
     flow = initialize_state_graph()
     app = flow.compile()
     final_state = app.invoke(state)
-    final_state["current_node_id"] = _node_hash(final_state, {"kind": "child"})
-    phase_id = initialize_and_upsert_child(final_state)
-    return phase_id
+    Node = add_node_to_dict(final_state["current_node_id"], final_state)
+    return Node.NodeId
+
+
+def move_back_in_phase(steps : int, current_node_id: str) -> str:
+    state = get_node_from_dict(current_node_id)
+    if not state:
+        raise ValueError(f"Node with ID {current_node_id} not found in the dictionary.")
+    new_node_id = step_back(steps, state)
+    return new_node_id
+
+
+
+    
 
 
 if __name__ == "__main__":
-    initial_state: MonorepoState = {
-        "issue_title": "Hi need to add comment in top of 1 state.py",
-        "issue_description": "Help in adding comment",
-        "config": {"max_search_turns": 3},
-        "project_root": ".",
-        "target_packages": [],
-        "filesystem_map": "",
-        "symbol_map": "",
-        "search_results": [],
-        "relevant_files": [],
-        "proposed_plan": "",
-        "diffs_to_apply": [],
-        "test_command": "",
-        "test_stdout": "",
-        "test_stderr": "",
-        "is_resolved": False,
-        "iteration_count": 0,
-    }
+    first_query = input("Enter first query: ").strip()
+    root_phase_id = add_root_phase(first_query, project_root=".")
+    print(f"root_phase_id={root_phase_id}")
+
+    next_query = input("Enter next query (or leave blank to exit): ").strip()
+    if next_query:
+        child_state: MonorepoState = {
+            "current_node_id": root_phase_id,
+            "parent_node_id": root_phase_id,
+            "issue_title": first_query,
+            "issue_description": first_query,
+            "config": {"max_search_turns": 3},
+            "project_root": ".",
+            "target_packages": [],
+            "filesystem_map": "",
+            "symbol_map": "",
+            "search_results": [],
+            "relevant_files": [],
+            "proposed_plan": "",
+            "diffs_to_apply": [],
+            "test_command": "",
+            "test_stdout": "",
+            "test_stderr": "",
+            "is_resolved": False,
+        }
+        child_phase_id = add_phase(root_phase_id, child_state, next_query, {"kind": "follow_up"})
+        print(f"child_phase_id={child_phase_id}")
+    
 
 

@@ -9,30 +9,11 @@ from app.agent.llm import get_chat_model
 from app.template import Node, PatcherNodeResponse, PlannerCoderResponse, RepoNavigatorResponse, SearchResultItem
 from app.tools.code_index import build_symbol_map, load_symbol_map
 from app.tools.helper_tools import parse_ripgrep_output
-from app.agent.llm_tools import NAVIGATOR_TOOLS, find_files, read_file_snippet, run_ripgrep, run_tree
+from app.agent.llm_tools import NAVIGATOR_TOOLS, find_files, read_file_snippet, run_ripgrep, run_tree, change_line_in_file
 from app.tools.node_helpers import convert_langchain_messages_to_completion_input,fetch_file_contents, normalize_tool_output
 # from app.nodes import _persist_node
+from app.state_template import MonorepoState
 
-
-class MonorepoState(TypedDict):
-    current_node_id: str
-    parent_node_id: str = Optional[str]
-    issue_title: str
-    issue_description: str
-    config: Dict[str, Any]
-    project_root: str
-    current_node_id: str
-    target_packages: List[str]
-    filesystem_map: str
-    symbol_map: str
-    search_results: Union[List[SearchResultItem], Dict[str, Any]]
-    relevant_files: List[str]
-    proposed_plan: str
-    diffs_to_apply: List[Dict[str, Any]]
-    test_command: str
-    test_stdout: str
-    test_stderr: str
-    is_resolved: bool
 
 
 
@@ -41,6 +22,7 @@ TOOL_MAP = {
     "run_ripgrep": run_ripgrep,
     "find_files": find_files,
     "read_file_snippet": read_file_snippet,
+    "change_line_in_file": change_line_in_file,
 }
 
 
@@ -155,7 +137,17 @@ def repo_navigator_node(state: MonorepoState) -> MonorepoState:
     #         "relevant_files": state["relevant_files"],
     #     },
     # )
-    return state
+    # target_package,filesystem_map,search_results,relevant_files
+    print(f"Target Packages: {state['target_packages']}")
+    print(f"Filesystem Map: {state['filesystem_map']}")
+    print(f"Search Results: {state['search_results']}")
+    print(f"Relevant Files: {state['relevant_files']}")
+    return RepoNavigatorResponse(
+        target_packages=state["target_packages"],
+        filesystem_map=state["filesystem_map"],
+        search_results=state["search_results"],
+        relevant_files=state["relevant_files"],
+    ).model_dump()
 
 
 
@@ -174,6 +166,8 @@ def planner_node(state: MonorepoState) -> MonorepoState:
         "2. The `search` block MUST exist verbatim in the target file, including exact whitespace and indentation.\n"
         "3. Keep `search` blocks unique enough (3–10 lines) to match only the target location.\n"
         "4. Provide a targeted test command (e.g., `pytest packages/core/tests/test_auth.py`) to verify the fix."
+        "5. The output format MUST be valid JSON with keys: proposed_plan (string), test_command (string), diffs_to_apply (list of dicts with keys: file, search, replace)."
+
     )
 
     formatted_code_context = ""
@@ -189,6 +183,7 @@ def planner_node(state: MonorepoState) -> MonorepoState:
         {state.get('test_stderr')}
 
         Please analyze the failure stack trace above, adjust your plan, and output corrected diffs.
+
         """
 
     user_prompt = f"""
@@ -203,6 +198,7 @@ def planner_node(state: MonorepoState) -> MonorepoState:
 
     response = get_chat_model(config, messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}])
     content_text = response.choices[0].message.content or ""
+    print(f"Planner Node Response:\n{content_text}\n")
     try:
         clean_json = content_text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         parsed_response = json.loads(clean_json)
@@ -221,7 +217,14 @@ def planner_node(state: MonorepoState) -> MonorepoState:
     #         "diffs_to_apply": state["diffs_to_apply"],
     #     },
     # )
-    return state
+    print(f"Proposed Plan: {state['proposed_plan']}")
+    print(f"Test Command: {state['test_command']}")
+    print(f"Diffs to Apply: {state['diffs_to_apply']}")
+    return PlannerCoderResponse(
+        proposed_plan=state["proposed_plan"],
+        test_command=state["test_command"],
+        diffs_to_apply=state["diffs_to_apply"],
+    ).model_dump()
 
 
 def patcher_node(state: MonorepoState) -> MonorepoState:
@@ -231,13 +234,10 @@ def patcher_node(state: MonorepoState) -> MonorepoState:
 
     system_prompt = (
         "You are an execution-phase patcher.\n"
-        "Your task is to review the current plan, the relevant file contents, and the prior state, then propose the exact minimal diffs to apply.\n"
-        "Return JSON with keys: proposed_plan (string) and diffs_to_apply (list of search/replace objects).\n\n"
+        "Your task is to apply the proposed diffs to the target files, run the provided test command.\n"
+        "Use the tools provided to make changes to the files and verify the fix.\n"
         "STRICT PATCHING RULES:\n"
-        "1. Do not edit files directly.\n"
-        "2. Only propose minimal search-and-replace diffs.\n"
-        "3. Each search block must exist verbatim in the target file.\n"
-        "4. Keep diffs narrowly scoped to the relevant files."
+        "1. NEVER rewrite the entire file. Only do minimal changes line by line as mentioned in current_state[proposed_diffs].\n"
     )
 
     formatted_code_context = ""
@@ -249,6 +249,7 @@ def patcher_node(state: MonorepoState) -> MonorepoState:
     Issue Description: {state['issue_description']}
     Prior Plan: {state.get('proposed_plan', '')}
     Relevant Files: {relevant_files}
+    Diffs to Apply: {state.get('diffs_to_apply', [])}
 
     === TARGET FILE CONTENTS ===
     {formatted_code_context}
