@@ -1,7 +1,7 @@
 
 from typing import Any, Dict, List, Optional, TypedDict, Union
 
-from app.template import SearchResultItem
+from app.node_template import SearchResultItem
 
 class MonorepoState(TypedDict):
     current_node_id: str

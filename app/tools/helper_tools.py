@@ -1,7 +1,7 @@
 
 from typing import List, Dict, Optional, Sequence, Union
 
-from app.template import SearchResultItem
+from app.node_template import SearchResultItem
 
 
 def parse_ripgrep_output(raw_output: str) -> List[SearchResultItem]:

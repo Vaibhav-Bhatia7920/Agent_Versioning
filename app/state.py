@@ -8,6 +8,7 @@ from langgraph.graph import START, StateGraph, END
 from app.node_operations import MonorepoState, patcher_node, planner_node, repo_navigator_node
 from app.dictionary_db import add_node_to_dict, get_node_from_dict
 from app.node_operations import step_back
+
 def initialize_state_graph() -> StateGraph:
     graph = StateGraph(MonorepoState)
     graph.add_node("repo_navigator", repo_navigator_node)
