@@ -4,13 +4,14 @@ from typing import Any, Dict, List, Optional, TypedDict, Union
 from app.node_template import SearchResultItem
 
 class MonorepoState(TypedDict):
-    current_node_id: str
-    parent_node_id: str = Optional[str]
+    current_phase_id: str
+    parent_phase_id: str = Optional[str]
+    user_query: str = Optional[str]
+    initial_context: str = Optional[str]
     issue_title: str
     issue_description: str
     config: Dict[str, Any]
     project_root: str
-    current_node_id: str
     target_packages: List[str]
     filesystem_map: str
     symbol_map: str

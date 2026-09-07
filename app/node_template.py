@@ -3,13 +3,14 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Sequence, Union
 
-class Node(BaseModel):
-    NodeId: str = Field(..., description="Unique identifier for the node")
-    ParentNodeId: Optional[str] = Field(None, description="Identifier of the parent node, if any")
-    NodeHash: str = Field(..., description="Hash representing the node's content")
+class Phase(BaseModel):
+    PhaseId: str = Field(..., description="Unique identifier for the node")
+    ParentPhaseId: Optional[str] = Field(None, description="Identifier of the parent node, if any")
+    PhaseHash: str = Field(..., description="Hash representing the node's content")
     GitCommitSHA: str = Field(..., description="SHA of the git commit associated with the node")
-    NodePrompt: str = Field(..., description="Prompt or input that generated the node")
-    NodeRawResponse: str = Field(..., description="Raw response or data associated with the node")
+    PhaseQuery: str = Field(..., description="Query or input that generated the node")
+    PhasePrompt: str = Field(..., description="Prompt or input that generated the node")
+    PhaseRawResponse: str = Field(..., description="Raw response or data associated with the node")  
 
 
 class SearchResultItem(BaseModel):
