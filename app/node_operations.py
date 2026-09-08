@@ -3,11 +3,11 @@
 from typing import Any
 
 # from app.db import fetch_node, initialize_database, upsert_node
-from app.node_template import Node
+from app.node_template import Phase
 from app.node_implementation import *
 
 
-from app.dictionary_db import get_node_from_dict
+from app.dictionary_db import get_phase_from_dict
 
 
 
@@ -79,20 +79,20 @@ from app.dictionary_db import get_node_from_dict
 # 	)
 # 	return Obj.NodeId
 
-def step_back(no_steps : int, current_node_id: str):
+def step_back(no_steps : int, current_phase_id: str):
 
-	current_node = get_node_from_dict(current_node_id)
-	if not current_node:
-		raise ValueError(f"Node with ID {current_node_id} not found.")
+	current_phase = get_phase_from_dict(current_phase_id)
+	if not current_phase:
+		raise ValueError(f"Phase with ID {current_phase_id} not found.")
 
 	for _ in range(no_steps):
-		if current_node.ParentNodeId is None:
+		if current_phase.ParentPhaseId is None:
 			break  # Reached the root node
-		current_node = get_node_from_dict(current_node.ParentNodeId)
-		if not current_node:
-			raise ValueError(f"Parent node with ID {current_node.ParentNodeId} not found.")
+		current_phase = get_phase_from_dict(current_phase.ParentPhaseId)
+		if not current_phase:
+			raise ValueError(f"Parent phase with ID {current_phase.ParentPhaseId} not found.")
 
-	return current_node.NodeId	
+	return current_phase.PhaseId	
     
 
 

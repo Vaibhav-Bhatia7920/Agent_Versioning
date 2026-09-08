@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from app.agent.llm import get_chat_model
 
-from app.node_template import Node, PatcherNodeResponse, PlannerCoderResponse, RepoNavigatorResponse, SearchResultItem
+from app.node_template import Phase, PatcherNodeResponse, PlannerCoderResponse, RepoNavigatorResponse, SearchResultItem
 from app.tools.code_index import build_symbol_map, load_symbol_map
 from app.tools.helper_tools import parse_ripgrep_output
 from app.agent.llm_tools import NAVIGATOR_TOOLS, find_files, read_file_snippet, run_ripgrep, run_tree, change_line_in_file
@@ -45,6 +45,10 @@ def repo_navigator_node(state: MonorepoState) -> MonorepoState:
         "Your task is to explore the repository using tools (run_tree, run_ripgrep, find_files, read_file_snippet) "
         "and the cached symbol map to discover affected sub-packages and pinpoint relevant source files for the reported issue.\n"
         "Keep your tool calls minimal and focused."
+        " STRICT RULES:\n"
+        "1. NEVER make assumptions about the codebase. Use the tools to gather evidence.\n"
+        "2. ALWAYS return a valid JSON object with keys: target_packages (list of strings), filesystem_map (string), search_results (list of dicts with keys: file, line, content), relevant_files (list of strings).\n"
+        
     )
 
     user_prompt = f"Issue Title: {state['issue_title']}\nDescription: {state['issue_description']}"
@@ -236,6 +240,7 @@ def patcher_node(state: MonorepoState) -> MonorepoState:
         "You are an execution-phase patcher.\n"
         "Your task is to apply the proposed diffs to the target files, run the provided test command.\n"
         "Use the tools provided to make changes to the files and verify the fix.\n"
+        "The tools available are: change_line_in_file, run_tree, run_ripgrep, find_files, read_file_snippet.\n"
         "STRICT PATCHING RULES:\n"
         "1. NEVER rewrite the entire file. Only do minimal changes line by line as mentioned in current_state[proposed_diffs].\n"
     )
@@ -263,6 +268,7 @@ def patcher_node(state: MonorepoState) -> MonorepoState:
     except Exception:
         parsed_response = PatcherNodeResponse(proposed_plan=state.get("proposed_plan", ""), diffs_to_apply=state.get("diffs_to_apply", []))
 
+    
     state["proposed_plan"] = parsed_response.proposed_plan
     state["diffs_to_apply"] = [diff.model_dump() for diff in parsed_response.diffs_to_apply]
     # _persist_node(
